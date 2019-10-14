@@ -5,6 +5,10 @@ authors = ["jaynus <jaynus@gmail.com>"]
 edition = "2018"
 description = "placeholder for a library"
 license = "MIT"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
 
 [dependencies]
+
+[dev-dependencies]
+criterion = "0.3"
