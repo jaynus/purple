@@ -1,27 +1,149 @@
-use std::alloc::{alloc_zeroed, dealloc, Layout};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::{
+    alloc::{alloc_zeroed, dealloc, Layout},
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    ptr::NonNull,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
-pub enum ArenaError {}
+pub enum ArenaError {
+    NotDisposed,
+}
+
+pub trait Dispose {
+    /// Dispose consumes the scoped buffer because its pointers become invalidated on disposal.
+    fn dispose(mut self) -> Result<(), ArenaError>;
+    fn tail(&self) -> NonNull<u8>;
+    fn ptr(&self) -> NonNull<u8>;
+}
+
+/// This buffer maintains a pointer to the current `tail` of the arena. The aim of this type is to allow deallocation
+/// *if* no other allocations have occured between this scoped allocation and its disposal. This allows us to avoid
+/// runtime checks in all allocations or a mutex, while still allowing for the case of a temporary allocation and
+/// deallocation inside the arena in a short scoped amount of time.
+///
+/// SAFETY: Drop implementation will silently leak frame-scoped memory.
+/// This buffer may leak memory until the next `reset`
+struct ScopedRawBuffer<'a> {
+    arena: &'a Arena,
+    ptr: NonNull<u8>,
+    tail: NonNull<u8>,
+}
+impl<'a> ScopedRawBuffer<'a> {
+    fn new(arena: &'a Arena, ptr: NonNull<u8>, tail: NonNull<u8>) -> Self {
+        Self { arena, ptr, tail }
+    }
+}
+impl<'a> Dispose for ScopedRawBuffer<'a> {
+    fn dispose(mut self) -> Result<(), ArenaError> {
+        self.arena.try_dispose(&mut self)
+    }
+    fn tail(&self) -> NonNull<u8> {
+        self.tail
+    }
+    fn ptr(&self) -> NonNull<u8> {
+        self.ptr
+    }
+}
+impl<'a> Drop for ScopedRawBuffer<'a> {
+    // We cant call our regular consuming `dispose` because of drop impl. However, because its drop being called
+    // we can still assume we are consumed and so it is safe to invalidate ourselves here.
+    fn drop(&mut self) {
+        self.arena.try_dispose(self);
+    }
+}
+
+/// Typed wrapper for `ScopedRawBuffer`
+pub struct ScopedBuffer<'a, T> {
+    inner: ScopedRawBuffer<'a>,
+    _marker: PhantomData<T>,
+}
+impl<'a, T> ScopedBuffer<'a, T> {
+    fn new(inner: ScopedRawBuffer<'a>) -> Self {
+        Self {
+            inner,
+            _marker: Default::default(),
+        }
+    }
+}
+impl<'a, T> Dispose for ScopedBuffer<'a, T> {
+    fn dispose(mut self) -> Result<(), ArenaError> {
+        self.inner.dispose()
+    }
+    fn tail(&self) -> NonNull<u8> {
+        self.inner.tail()
+    }
+    fn ptr(&self) -> NonNull<u8> {
+        self.inner.ptr()
+    }
+}
+impl<'a, T> AsRef<T> for ScopedBuffer<'a, T> {
+    fn as_ref(&self) -> &T {
+        self.deref()
+    }
+}
+impl<'a, T> Deref for ScopedBuffer<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(self.inner.ptr.as_ptr() as *const T) }
+    }
+}
+impl<'a, T> DerefMut for ScopedBuffer<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *(self.inner.ptr.as_ptr() as *mut T) }
+    }
+}
 
 pub struct Arena {
-    head: AtomicPtr<u8>,
-    current: AtomicPtr<u8>,
+    head: NonNull<u8>,
+    tail: AtomicPtr<u8>,
     size: usize,
 }
 impl Arena {
     pub fn with_capacity(size: usize) -> Self {
         let (head, current) = {
-            let arena = unsafe { alloc_zeroed(Layout::from_size_align_unchecked(size, 16)) };
-            (AtomicPtr::new(arena), AtomicPtr::new(arena))
+            let head = unsafe {
+                NonNull::new_unchecked(alloc_zeroed(Layout::from_size_align_unchecked(size, 16)))
+            };
+            (head, AtomicPtr::new(head.as_ptr()))
         };
 
         Self {
             head,
-            current,
+            tail: current,
             size,
         }
     }
 
+    /// Realloc just allocs another chunk at the end of the arena, thus wasting memory but being fast
+    ///
+    pub(crate) unsafe fn realloc(
+        &self,
+        src: NonNull<u8>,
+        src_layout: Layout,
+        dst_layout: Layout,
+    ) -> NonNull<u8> {
+        let (dst, _, _) = self.bump(dst_layout);
+        let src_size = Self::align_size(src_layout);
+
+        std::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_ptr(), src_size);
+
+        dst
+    }
+
+    #[inline(always)]
+    pub fn alloc_scoped<'a, T>(&'a self, value: T) -> ScopedBuffer<'a, T> {
+        ScopedBuffer::new(self.alloc_raw_scoped(value))
+    }
+
+    #[inline(always)]
+    fn alloc_raw_scoped<'a, T>(&'a self, value: T) -> ScopedRawBuffer<'a> {
+        let (ptr, tail, size) = self.bump(Layout::new::<T>());
+        ScopedRawBuffer::new(self, ptr, tail)
+    }
+
+    #[inline(always)]
     pub fn alloc<T>(&self, value: T) -> &mut T {
         self.alloc_with(|| value)
     }
@@ -32,7 +154,7 @@ impl Arena {
         F: FnOnce() -> T,
     {
         #[inline(always)]
-        unsafe fn inner_writer<T, F>(ptr: *mut T, f: F)
+        unsafe fn inner_writer<T, F>(ptr: NonNull<T>, f: F)
         where
             F: FnOnce() -> T,
         {
@@ -48,51 +170,217 @@ impl Arena {
             // directly into the heap instead. It seems we get it to realize
             // this most consistently if we put this critical line into it's
             // own function instead of inlining it into the surrounding code.
-            std::ptr::write(ptr, f())
+            std::ptr::write(ptr.as_ptr(), f())
         }
 
         let layout = Layout::new::<T>();
-        let size = layout.size() + (layout.size() % layout.align());
-
-        let mut current = self.current.load(Ordering::SeqCst);
-
-        loop {
-            if self
-                .current
-                .compare_exchange_weak(
-                    current,
-                    unsafe { current.add(size) },
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                )
-                .unwrap()
-                == current
-            {
-                break;
-            } else {
-                current = self.current.load(Ordering::SeqCst);
-            }
-        }
+        let (mut ptr, _, _) = self.bump(layout);
 
         unsafe {
-            let res = current as *mut T;
-
-            inner_writer(res, f);
-
-            &mut *res
+            inner_writer(ptr, f);
+            &mut *ptr.as_ptr()
         }
     }
 
-    pub fn reset(&mut self) {
-        *self.current.get_mut() = self.head.load(Ordering::SeqCst);
+    /// Tries to dispose the provided Disposable. This will succeed if the tail has not moved since allocation.
+    /// Otherwise, it will fail. Failure indicates that the memory is 'leaked' until `reset` is called.
+    fn try_dispose<T: Dispose>(&self, disposable: &mut T) -> Result<(), ArenaError> {
+        match self.tail.compare_exchange_weak(
+            disposable.tail().as_ptr(),
+            disposable.ptr().as_ptr(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(returned) => {
+                if returned == disposable.tail().as_ptr() {
+                    Ok(())
+                } else {
+                    Err(ArenaError::NotDisposed)
+                }
+            }
+            Err(_) => Err(ArenaError::NotDisposed),
+        }
+    }
+
+    #[inline]
+    pub unsafe fn reset(&mut self) {
+        *self.tail.get_mut() = self.head.as_ptr();
+    }
+
+    #[inline(always)]
+    pub(crate) fn bump<T>(&self, layout: Layout) -> (NonNull<T>, NonNull<u8>, usize) {
+        let size = Self::align_size(layout);
+
+        let mut current = self.tail.load(Ordering::SeqCst);
+        let mut new_tail = unsafe { current.add(size) };
+        loop {
+            match self.tail.compare_exchange_weak(
+                current,
+                new_tail,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(returned_current) => {
+                    if current == returned_current {
+                        break;
+                    } else {
+                        new_tail = unsafe { returned_current.add(size) };
+                        current = returned_current;
+                    }
+                }
+                Err(returned_current) => {
+                    new_tail = unsafe { returned_current.add(size) };
+                    current = returned_current;
+                }
+            }
+        }
+        unsafe {
+            (
+                NonNull::new_unchecked(current as *mut T),
+                NonNull::new_unchecked(new_tail),
+                size,
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        unsafe { std::ptr::eq(self.head.as_ptr(), self.tail.load(Ordering::SeqCst)) }
+    }
+
+    #[inline(always)]
+    fn size(&self) -> usize {
+        self.size
+    }
+
+    #[inline(always)]
+    fn consumed(&self) -> usize {
+        unsafe {
+            self.tail
+                .load(Ordering::SeqCst)
+                .sub(self.head.as_ptr() as usize) as usize
+        }
+    }
+
+    #[inline(always)]
+    fn align_size(layout: Layout) -> usize {
+        layout.size() + (layout.size() % layout.align())
     }
 }
+unsafe impl Send for Arena {}
+unsafe impl Sync for Arena {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rayon::prelude::*;
+    use std::ptr;
+
+    struct TestType {
+        int: u32,
+        buffer: [u8; 1024],
+    }
+    impl Default for TestType {
+        fn default() -> Self {
+            Self {
+                int: 123,
+                buffer: [41; 1024],
+            }
+        }
+    }
+
+    fn get_tail(arena: &Arena) -> *mut u8 {
+        arena.tail.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn scoped_allocators() {
+        let mut arena = Arena::with_capacity(524_288_000);
+        let size = Layout::new::<TestType>().size();
+
+        // Confirm manual dispos
+        let scoped = arena.alloc_scoped(TestType::default());
+        assert_eq!(arena.consumed(), size);
+        assert!(scoped.dispose().is_ok());
+        assert!(arena.is_empty());
+
+        // confirm an implicit-Drop
+        {
+            let scoped = arena.alloc_scoped(TestType::default());
+            assert_eq!(arena.consumed(), size);
+        }
+        assert!(arena.is_empty());
+
+        // Confirm a failed drop
+        let scoped = arena.alloc_scoped(TestType::default());
+        assert_eq!(arena.consumed(), size);
+        let ptr = arena.alloc::<u8>(1);
+        assert_eq!(arena.consumed(), size + 1);
+        assert!(scoped.dispose().is_err());
+        assert_eq!(arena.consumed(), size + 1);
+
+        unsafe {
+            arena.reset();
+        }
+        assert!(arena.is_empty());
+    }
+
+    #[test]
+    fn threaded_alloc_reset() {
+        let mut arena = Arena::with_capacity(524_288_000);
+
+        (0..500).into_par_iter().for_each(|test| {
+            let ptr = arena.alloc(TestType::default());
+        });
+        unsafe {
+            assert!(ptr::eq(
+                get_tail(&arena),
+                arena
+                    .head
+                    .as_ptr()
+                    .add(Layout::new::<TestType>().size() * 500)
+            ));
+        }
+        unsafe {
+            arena.reset();
+        }
+        assert!(arena.is_empty());
+    }
+
+    #[test]
+    fn loop_alloc() {
+        let arena = Arena::with_capacity(524_288_000);
+
+        (0..500).into_iter().for_each(|test| {
+            let ptr = arena.alloc(TestType::default());
+        });
+        unsafe {
+            // Did we actually grow correctly?
+            assert!(ptr::eq(
+                get_tail(&arena),
+                arena
+                    .head
+                    .as_ptr()
+                    .add(Layout::new::<TestType>().size() * 500)
+            ));
+        }
+    }
+
     #[test]
     fn simple() {
         let arena = Arena::with_capacity(524_288_000);
+        unsafe {
+            // Test single byte
+            let ptr = arena.alloc::<u8>(1);
+            assert!(ptr::eq(arena.head.as_ptr().add(1), get_tail(&arena)));
+            assert!(ptr::eq((ptr as *mut u8).add(1), get_tail(&arena)));
+
+            // Test struct with array
+            let ptr = arena.alloc::<TestType>(TestType::default());
+            assert!(ptr::eq(
+                (ptr as *mut TestType as *mut u8).add(Layout::new::<TestType>().size()),
+                get_tail(&arena)
+            ));
+        }
     }
 }
