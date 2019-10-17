@@ -315,6 +315,17 @@ impl Arena {
 unsafe impl Send for Arena {}
 unsafe impl Sync for Arena {}
 
+impl std::fmt::Debug for Arena {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Arena (capacity = {}, consumed = {})",
+            self.size,
+            self.consumed()
+        )
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
