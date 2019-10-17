@@ -6,8 +6,13 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
+pub mod collections;
+
+#[derive(Debug)]
 pub enum ArenaError {
     NotDisposed,
+    CapacityExceeded,
+    OutOfBounds,
 }
 
 pub trait Dispose {
@@ -86,12 +91,12 @@ impl<'a, T> Deref for ScopedBuffer<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*(self.inner.ptr.as_ptr() as *const T) }
+        unsafe { &*(self.inner.ptr.as_ptr().cast()) }
     }
 }
 impl<'a, T> DerefMut for ScopedBuffer<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *(self.inner.ptr.as_ptr() as *mut T) }
+        unsafe { &mut *(self.inner.ptr.as_ptr().cast()) }
     }
 }
 
@@ -118,12 +123,12 @@ impl Arena {
 
     /// Realloc just allocs another chunk at the end of the arena, thus wasting memory but being fast
     ///
-    pub(crate) unsafe fn realloc(
+    pub(crate) unsafe fn realloc<T>(
         &self,
-        src: NonNull<u8>,
+        src: NonNull<T>,
         src_layout: Layout,
         dst_layout: Layout,
-    ) -> NonNull<u8> {
+    ) -> NonNull<T> {
         let (dst, _, _) = self.bump(dst_layout);
         let src_size = Self::align_size(src_layout);
 
@@ -134,13 +139,41 @@ impl Arena {
 
     #[inline(always)]
     pub fn alloc_scoped<'a, T>(&'a self, value: T) -> ScopedBuffer<'a, T> {
-        ScopedBuffer::new(self.alloc_raw_scoped(value))
+        #[inline(always)]
+        unsafe fn inner_writer<T, F>(ptr: NonNull<T>, f: F)
+        where
+            F: FnOnce() -> T,
+        {
+            // Taken from bumpalo
+
+            // This function is translated as:
+            // - allocate space for a T on the stack
+            // - call f() with the return value being put onto this stack space
+            // - memcpy from the stack to the heap
+            //
+            // Ideally we want LLVM to always realize that doing a stack
+            // allocation is unnecessary and optimize the code so it writes
+            // directly into the heap instead. It seems we get it to realize
+            // this most consistently if we put this critical line into it's
+            // own function instead of inlining it into the surrounding code.
+            std::ptr::write(ptr.as_ptr(), f())
+        }
+        let raw = self.alloc_scoped_raw(Layout::new::<T>());
+        unsafe {
+            inner_writer(raw.ptr.cast(), || value);
+        }
+        ScopedBuffer::new(raw)
     }
 
     #[inline(always)]
-    fn alloc_raw_scoped<'a, T>(&'a self, value: T) -> ScopedRawBuffer<'a> {
-        let (ptr, tail, size) = self.bump(Layout::new::<T>());
+    fn alloc_scoped_raw<'a>(&'a self, layout: Layout) -> ScopedRawBuffer<'a> {
+        let (ptr, tail, size) = self.bump(layout);
         ScopedRawBuffer::new(self, ptr, tail)
+    }
+
+    pub(crate) fn alloc_raw<T>(&self, layout: Layout) -> NonNull<T> {
+        log::trace!("alloc_raw: {:?}", layout);
+        self.bump::<T>(layout).0
     }
 
     #[inline(always)]
@@ -185,14 +218,24 @@ impl Arena {
     /// Tries to dispose the provided Disposable. This will succeed if the tail has not moved since allocation.
     /// Otherwise, it will fail. Failure indicates that the memory is 'leaked' until `reset` is called.
     fn try_dispose<T: Dispose>(&self, disposable: &mut T) -> Result<(), ArenaError> {
+        self.try_raw_dispose(disposable.tail(), disposable.ptr())
+    }
+
+    /// Tries to dispose the provided Disposable. This will succeed if the tail has not moved since allocation.
+    /// Otherwise, it will fail. Failure indicates that the memory is 'leaked' until `reset` is called.
+    pub(crate) fn try_raw_dispose(
+        &self,
+        tail: NonNull<u8>,
+        ptr: NonNull<u8>,
+    ) -> Result<(), ArenaError> {
         match self.tail.compare_exchange_weak(
-            disposable.tail().as_ptr(),
-            disposable.ptr().as_ptr(),
+            tail.as_ptr(),
+            ptr.as_ptr(),
             Ordering::SeqCst,
             Ordering::SeqCst,
         ) {
             Ok(returned) => {
-                if returned == disposable.tail().as_ptr() {
+                if returned == tail.as_ptr() {
                     Ok(())
                 } else {
                     Err(ArenaError::NotDisposed)
@@ -209,6 +252,8 @@ impl Arena {
 
     #[inline(always)]
     pub(crate) fn bump<T>(&self, layout: Layout) -> (NonNull<T>, NonNull<u8>, usize) {
+        log::trace!("bump: {:?}", layout);
+
         let size = Self::align_size(layout);
 
         let mut current = self.tail.load(Ordering::SeqCst);
@@ -271,12 +316,12 @@ unsafe impl Send for Arena {}
 unsafe impl Sync for Arena {}
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rayon::prelude::*;
     use std::ptr;
 
-    struct TestType {
+    pub struct TestType {
         int: u32,
         buffer: [u8; 1024],
     }
@@ -289,13 +334,13 @@ mod tests {
         }
     }
 
-    fn get_tail(arena: &Arena) -> *mut u8 {
+    pub fn get_tail(arena: &Arena) -> *mut u8 {
         arena.tail.load(Ordering::SeqCst)
     }
 
     #[test]
     fn scoped_allocators() {
-        let mut arena = Arena::with_capacity(524_288_000);
+        let mut arena = Arena::with_capacity(5_242_880);
         let size = Layout::new::<TestType>().size();
 
         // Confirm manual dispos
@@ -327,7 +372,7 @@ mod tests {
 
     #[test]
     fn threaded_alloc_reset() {
-        let mut arena = Arena::with_capacity(524_288_000);
+        let mut arena = Arena::with_capacity(5_242_880);
 
         (0..500).into_par_iter().for_each(|test| {
             let ptr = arena.alloc(TestType::default());
@@ -349,7 +394,7 @@ mod tests {
 
     #[test]
     fn loop_alloc() {
-        let arena = Arena::with_capacity(524_288_000);
+        let arena = Arena::with_capacity(5_242_880);
 
         (0..500).into_iter().for_each(|test| {
             let ptr = arena.alloc(TestType::default());
@@ -368,7 +413,7 @@ mod tests {
 
     #[test]
     fn simple() {
-        let arena = Arena::with_capacity(524_288_000);
+        let arena = Arena::with_capacity(5_242_880);
         unsafe {
             // Test single byte
             let ptr = arena.alloc::<u8>(1);
