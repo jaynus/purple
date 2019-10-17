@@ -1,5 +1,5 @@
 use std::{
-    alloc::{alloc_zeroed, dealloc, Layout},
+    alloc::{alloc_zeroed, Layout},
     marker::PhantomData,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -17,7 +17,7 @@ pub enum ArenaError {
 
 pub trait Dispose {
     /// Dispose consumes the scoped buffer because its pointers become invalidated on disposal.
-    fn dispose(mut self) -> Result<(), ArenaError>;
+    fn dispose(self) -> Result<(), ArenaError>;
     fn tail(&self) -> NonNull<u8>;
     fn ptr(&self) -> NonNull<u8>;
 }

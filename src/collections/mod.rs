@@ -1,3 +1,7 @@
 mod alloc;
-//mod bit_set;
+
 mod vec;
+pub use vec::Vec;
+
+//mod bit_set;
+//mod bit_vec;
