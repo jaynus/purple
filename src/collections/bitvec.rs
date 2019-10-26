@@ -3,7 +3,7 @@ use crate::*;
 
 use packed_simd::u32x4;
 
-use std::ops::{BitAnd, BitOr, Range};
+use std::ops::{BitAnd, BitOr, Index, Range};
 
 pub struct BitVec<'a> {
     arena: &'a Arena,
@@ -191,6 +191,14 @@ impl<'a> BitAnd for BitVec<'a> {
 
     fn bitand(self, rhs: Self) -> Self {
         self.and(rhs)
+    }
+}
+
+impl<'a> Index<usize> for BitVec<'a> {
+    type Output = bool;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).unwrap()
     }
 }
 
