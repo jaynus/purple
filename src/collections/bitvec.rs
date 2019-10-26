@@ -10,8 +10,9 @@ pub struct BitVec<'a> {
 impl<'a> BitVec<'a> {
     /// Capacity for a BitVec is in bytes
     /// However, it must be 32-bit aligned as we internally store in integers
-    pub fn with_capacity_in(arena: &'a Arena, capacity: usize) -> Self {
-        assert!(capacity % 4 == 0);
+    pub fn with_capacity_in(arena: &'a Arena, mut capacity: usize) -> Self {
+        // Round it up if its not 32-bit aligned
+        capacity += capacity % 4;
 
         let buffer = arena.alloc_scoped_raw(Layout::array::<u32>(capacity / 4).unwrap());
 
