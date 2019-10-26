@@ -46,6 +46,17 @@ impl<'a> BitVec<'a> {
         const BITS_PER_SIMD: usize = (std::mem::size_of::<u32>() * 4) * 8;
 
         if len % BITS_PER_SIMD == 0 {
+            #[cfg(features = "nightly")]
+            {
+                unsafe {
+                    let left_ptr: *mut u32x4 = self.as_mut_ptr().add(dst / 32).cast();
+                    let right_ptr: *const u32x4 = self.as_ptr().add(src / 32).cast();
+                    *left_ptr = *left_ptr | *right_ptr;
+                }
+
+                return;
+            }
+
             #[target_feature(enable = "sse2")]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             {
@@ -60,16 +71,6 @@ impl<'a> BitVec<'a> {
 
                     *left_ptr = _mm_or_si128(*left_ptr, *right_ptr);
                 }
-                return;
-            }
-            #[cfg(features = "nightly")]
-            {
-                unsafe {
-                    let left_ptr: *mut u32x4 = self.as_mut_ptr().add(dst / 32).cast();
-                    let right_ptr: *const u32x4 = self.as_ptr().add(src / 32).cast();
-                    *left_ptr = *left_ptr | *right_ptr;
-                }
-
                 return;
             }
         }
@@ -95,6 +96,24 @@ impl<'a> BitVec<'a> {
 
     #[inline]
     pub fn or(mut self, other: Self) -> BitVec<'a> {
+        #[cfg(features = "nightly")]
+        {
+            assert!(self.capacity() == other.capacity());
+
+            let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
+            let right_ptr: *const u32x4 = other.as_ptr().cast();
+
+            for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
+                unsafe {
+                    *left_ptr.add(n) = *left_ptr.add(n) | *right_ptr.add(n);
+
+                    left_ptr.add(n);
+                };
+            }
+
+            return self;
+        }
+
         #[target_feature(enable = "sse2")]
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
@@ -115,30 +134,26 @@ impl<'a> BitVec<'a> {
             return self;
         }
 
-        #[cfg(features = "nightly")]
-        {
-            assert!(self.capacity() == other.capacity());
-
-            let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
-            let right_ptr: *const u32x4 = other.as_ptr().cast();
-
-            for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
-                unsafe {
-                    *left_ptr.add(n) = *left_ptr.add(n) | *right_ptr.add(n);
-
-                    left_ptr.add(n);
-                };
-            }
-
-            self
-        }
-
         unimplemented!()
     }
 
     #[inline]
     pub fn and(mut self, other: Self) -> BitVec<'a> {
         assert!(self.capacity() == other.capacity());
+
+        #[cfg(features = "nightly")]
+        {
+            let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
+            let right_ptr: *const u32x4 = other.as_ptr().cast();
+
+            for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
+                unsafe {
+                    *left_ptr.add(n) = *left_ptr.add(n) & *right_ptr.add(n);
+                };
+            }
+
+            return self;
+        }
 
         #[target_feature(enable = "sse2")]
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -154,20 +169,6 @@ impl<'a> BitVec<'a> {
             for n in 0..(self.capacity() / (32 * 4)) {
                 unsafe {
                     *left_ptr.add(n) = _mm_and_si128(*left_ptr.add(n), *right_ptr.add(n));
-                };
-            }
-
-            return self;
-        }
-
-        #[cfg(features = "nightly")]
-        {
-            let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
-            let right_ptr: *const u32x4 = other.as_ptr().cast();
-
-            for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
-                unsafe {
-                    *left_ptr.add(n) = *left_ptr.add(n) & *right_ptr.add(n);
                 };
             }
 
