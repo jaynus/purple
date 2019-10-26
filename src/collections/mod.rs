@@ -1,7 +1,7 @@
 mod alloc;
 
 mod vec;
-pub use vec::Vec;
+pub use vec::{CollectIn, FromIteratorIn, Vec};
 
-//mod bit_set;
-//mod bit_vec;
+mod bitvec;
+pub use bitvec::BitVec;

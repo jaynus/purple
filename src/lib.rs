@@ -72,7 +72,7 @@ impl<'a, T> ScopedBuffer<'a, T> {
     }
 }
 impl<'a, T> Dispose for ScopedBuffer<'a, T> {
-    fn dispose(mut self) -> Result<(), ArenaError> {
+    fn dispose(self) -> Result<(), ArenaError> {
         self.inner.dispose()
     }
     fn tail(&self) -> NonNull<u8> {
@@ -176,6 +176,10 @@ impl Arena {
         self.bump::<T>(layout).0
     }
 
+    pub fn alloc_slice<'a, T>(&self, layout: Layout) -> &'a mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.bump::<T>(layout).0.as_ptr(), layout.size()) }
+    }
+
     #[inline(always)]
     pub fn alloc<T>(&self, value: T) -> &mut T {
         self.alloc_with(|| value)
@@ -207,7 +211,7 @@ impl Arena {
         }
 
         let layout = Layout::new::<T>();
-        let (mut ptr, _, _) = self.bump(layout);
+        let (ptr, _, _) = self.bump(layout);
 
         unsafe {
             inner_writer(ptr, f);
@@ -290,7 +294,7 @@ impl Arena {
 
     #[inline(always)]
     fn is_empty(&self) -> bool {
-        unsafe { std::ptr::eq(self.head.as_ptr(), self.tail.load(Ordering::SeqCst)) }
+        std::ptr::eq(self.head.as_ptr(), self.tail.load(Ordering::SeqCst))
     }
 
     #[inline(always)]
@@ -362,7 +366,7 @@ pub(crate) mod tests {
 
         // confirm an implicit-Drop
         {
-            let scoped = arena.alloc_scoped(TestType::default());
+            let _scoped = arena.alloc_scoped(TestType::default());
             assert_eq!(arena.consumed(), size);
         }
         assert!(arena.is_empty());
@@ -370,7 +374,7 @@ pub(crate) mod tests {
         // Confirm a failed drop
         let scoped = arena.alloc_scoped(TestType::default());
         assert_eq!(arena.consumed(), size);
-        let ptr = arena.alloc::<u8>(1);
+        let _ = arena.alloc::<u8>(1);
         assert_eq!(arena.consumed(), size + 1);
         assert!(scoped.dispose().is_err());
         assert_eq!(arena.consumed(), size + 1);
@@ -385,8 +389,8 @@ pub(crate) mod tests {
     fn threaded_alloc_reset() {
         let mut arena = Arena::with_capacity(5_242_880);
 
-        (0..500).into_par_iter().for_each(|test| {
-            let ptr = arena.alloc(TestType::default());
+        (0..500).into_par_iter().for_each(|_| {
+            let _ = arena.alloc(TestType::default());
         });
         unsafe {
             assert!(ptr::eq(
@@ -407,8 +411,8 @@ pub(crate) mod tests {
     fn loop_alloc() {
         let arena = Arena::with_capacity(5_242_880);
 
-        (0..500).into_iter().for_each(|test| {
-            let ptr = arena.alloc(TestType::default());
+        (0..500).into_iter().for_each(|_| {
+            let _ = arena.alloc(TestType::default());
         });
         unsafe {
             // Did we actually grow correctly?

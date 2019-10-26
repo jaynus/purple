@@ -1,6 +1,7 @@
 use super::alloc::{Layout, UnstableLayoutMethods};
 use crate::*;
 use derivative::Derivative;
+use rayon::iter::ParallelIterator;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
 
@@ -30,6 +31,11 @@ impl<'a, T> Vec<'a, T> {
             r.push(i).unwrap();
         });
         r
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     #[inline]
@@ -67,7 +73,7 @@ impl<'a, T> Vec<'a, T> {
         self.buffer.ptr.as_ptr().cast()
     }
 
-    pub(crate) fn as_ptr(&mut self) -> *mut T {
+    pub(crate) fn as_ptr(&self) -> *const T {
         self.buffer.ptr.as_ptr().cast()
     }
 
@@ -96,11 +102,9 @@ impl<'a, T> Vec<'a, T> {
         if self.len() == 0 {
             None
         } else {
-            unsafe {
-                self.size -= 1;
-                //Some(self.get(self.len()).unwrap()) TODO: Return old values
-                None
-            }
+            self.size -= 1;
+            //Some(self.get(self.len()).unwrap()) TODO: Return old values
+            None
         }
     }
 
@@ -375,6 +379,20 @@ impl<'a, T> FromIteratorIn<'a, T> for Vec<'a, T> {
     }
 }
 
+impl<'a, T> std::ops::Index<usize> for Vec<'a, T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).unwrap()
+    }
+}
+
+impl<'a, T> std::ops::IndexMut<usize> for Vec<'a, T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index).unwrap()
+    }
+}
+
 pub trait CollectIn<'a, T> {
     fn collect_in<B: FromIteratorIn<'a, T>>(self, arena: &'a Arena) -> B;
 }
@@ -527,7 +545,7 @@ mod tests {
 
     #[test]
     fn from_iter_in() {
-        let mut arena = Arena::with_capacity(5_242_880);
+        let arena = Arena::with_capacity(5_242_880);
 
         let test_values = [
             TestType { value: 1 },
@@ -554,7 +572,7 @@ mod tests {
 
     #[test]
     fn iterators() {
-        let mut arena = Arena::with_capacity(5_242_880);
+        let arena = Arena::with_capacity(5_242_880);
         let mut vec = Vec::with_capacity_in(&arena, 500);
 
         let test_values = [
@@ -593,7 +611,7 @@ mod tests {
 
     #[test]
     fn push_read_vec() {
-        let mut arena = Arena::with_capacity(5_242_880);
+        let arena = Arena::with_capacity(5_242_880);
         let mut vec = Vec::with_capacity_in(&arena, 500);
 
         let test_values = [
