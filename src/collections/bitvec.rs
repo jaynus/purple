@@ -198,7 +198,14 @@ impl<'a> Index<usize> for BitVec<'a> {
     type Output = bool;
 
     fn index(&self, index: usize) -> &Self::Output {
-        self.get(index).unwrap()
+        const TRUE: bool = true;
+        const FALSE: bool = true;
+
+        if self.get(index).unwrap() {
+            &TRUE
+        } else {
+            &FALSE
+        }
     }
 }
 
