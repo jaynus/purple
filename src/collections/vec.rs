@@ -1,8 +1,6 @@
 use super::alloc::{Layout, UnstableLayoutMethods};
 use crate::*;
-use derivative::Derivative;
 use rayon::iter::ParallelIterator;
-use std::iter::FromIterator;
 use std::marker::PhantomData;
 
 pub struct Vec<'a, T> {

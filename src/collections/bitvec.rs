@@ -1,9 +1,10 @@
 use super::alloc::*;
 use crate::*;
 
+#[cfg(feature = "nightly")]
 use packed_simd::u32x4;
 
-use std::ops::{BitAnd, BitOr, Index, Range};
+use std::ops::{BitAnd, BitOr, Index};
 
 pub struct BitVec<'a> {
     arena: &'a Arena,
@@ -15,13 +16,13 @@ impl<'a> BitVec<'a> {
     /// Capacity for a BitVec is in BITS
     /// However, it must be 32-bit aligned as we internally store in integers
     pub fn with_capacity_in(arena: &'a Arena, mut capacity: usize) -> Self {
-        let step_bits = std::mem::size_of::<u32x4>() * 8;
+        let intrin_size = std::mem::size_of::<u32>() * 4;
+        let step_bits = intrin_size * 8;
         capacity = (capacity + step_bits) - (capacity % step_bits);
 
         let internal_capacity = capacity / 32;
 
-        let mut layout =
-            Layout::from_size_align(internal_capacity, std::mem::align_of::<u32x4>()).unwrap();
+        let mut layout = Layout::from_size_align(internal_capacity, intrin_size).unwrap();
 
         let buffer = arena.alloc_scoped_raw(layout);
 
@@ -33,56 +34,147 @@ impl<'a> BitVec<'a> {
         }
     }
 
-    pub fn or_subslice(&mut self, dst: usize, src: usize, len: usize) {
-        const BITS_PER_SIMD: usize = std::mem::size_of::<u32x4>() * 8;
-
-        if len % BITS_PER_SIMD == 0 {
-            unsafe {
-                let left_ptr: *mut u32x4 = self.as_mut_ptr().add(dst / 32).cast();
-                let right_ptr: *const u32x4 = self.as_ptr().add(src / 32).cast();
-                *left_ptr = *left_ptr | *right_ptr;
-            }
-        }
+    pub fn as_mut_slice(&mut self) -> &[u32] {
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity() / 32) }
     }
 
     pub fn as_slice(&self) -> &[u32] {
         unsafe { std::slice::from_raw_parts(self.as_ptr(), self.capacity() / 32) }
     }
 
-    #[inline]
-    pub fn or(mut self, other: Self) -> BitVec<'a> {
-        assert!(self.capacity() == other.capacity());
+    pub fn or_subslice(&mut self, dst: usize, src: usize, len: usize) {
+        const BITS_PER_SIMD: usize = (std::mem::size_of::<u32>() * 4) * 8;
 
-        let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
-        let right_ptr: *const u32x4 = other.as_ptr().cast();
+        if len % BITS_PER_SIMD == 0 {
+            #[target_feature(enable = "sse2")]
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            {
+                #[cfg(target_arch = "x86")]
+                use std::arch::x86::*;
+                #[cfg(target_arch = "x86_64")]
+                use std::arch::x86_64::*;
 
-        for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
-            unsafe {
-                *left_ptr.add(n) = *left_ptr.add(n) | *right_ptr.add(n);
+                unsafe {
+                    let left_ptr: *mut __m128i = self.as_mut_ptr().add(dst / 32).cast();
+                    let right_ptr: *const __m128i = self.as_ptr().add(src / 32).cast();
 
-                left_ptr.add(n);
-            };
+                    *left_ptr = _mm_or_si128(*left_ptr, *right_ptr);
+                }
+                return;
+            }
+            #[cfg(features = "nightly")]
+            {
+                unsafe {
+                    let left_ptr: *mut u32x4 = self.as_mut_ptr().add(dst / 32).cast();
+                    let right_ptr: *const u32x4 = self.as_ptr().add(src / 32).cast();
+                    *left_ptr = *left_ptr | *right_ptr;
+                }
+
+                return;
+            }
         }
 
-        self
+        let slice = self.buffer.as_mut_slice::<u32>();
+
+        let dst = dst / 32;
+        let src = src / 32;
+
+        let mut bit = 0;
+        while bit < len {
+            let src_idx = src + (bit / 32);
+            let dst_idx = dst + (bit / 32);
+            if len - bit >= 32 {
+                slice[dst_idx] = slice[dst_idx] | slice[src_idx];
+                bit += 32;
+            } else {
+                slice[dst_idx] = slice[dst_idx] >> bit as u32 | slice[src_idx];
+                bit += 1;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn or(mut self, other: Self) -> BitVec<'a> {
+        #[target_feature(enable = "sse2")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            #[cfg(target_arch = "x86")]
+            use std::arch::x86::*;
+            #[cfg(target_arch = "x86_64")]
+            use std::arch::x86_64::*;
+
+            let left_ptr: *mut __m128i = self.as_mut_ptr().cast();
+            let right_ptr: *const __m128i = other.as_ptr().cast();
+
+            for n in 0..(self.capacity() / (32 * 4)) {
+                unsafe {
+                    *left_ptr.add(n) = _mm_or_si128(*left_ptr.add(n), *right_ptr.add(n));
+                };
+            }
+
+            return self;
+        }
+
+        #[cfg(features = "nightly")]
+        {
+            assert!(self.capacity() == other.capacity());
+
+            let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
+            let right_ptr: *const u32x4 = other.as_ptr().cast();
+
+            for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
+                unsafe {
+                    *left_ptr.add(n) = *left_ptr.add(n) | *right_ptr.add(n);
+
+                    left_ptr.add(n);
+                };
+            }
+
+            self
+        }
+
+        unimplemented!()
     }
 
     #[inline]
     pub fn and(mut self, other: Self) -> BitVec<'a> {
         assert!(self.capacity() == other.capacity());
 
-        let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
-        let right_ptr: *const u32x4 = other.as_ptr().cast();
+        #[target_feature(enable = "sse2")]
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            #[cfg(target_arch = "x86")]
+            use std::arch::x86::*;
+            #[cfg(target_arch = "x86_64")]
+            use std::arch::x86_64::*;
 
-        for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
-            unsafe {
-                *left_ptr.add(n) = *left_ptr.add(n) & *right_ptr.add(n);
+            let left_ptr: *mut __m128i = self.as_mut_ptr().cast();
+            let right_ptr: *const __m128i = other.as_ptr().cast();
 
-                left_ptr.add(n);
-            };
+            for n in 0..(self.capacity() / (32 * 4)) {
+                unsafe {
+                    *left_ptr.add(n) = _mm_and_si128(*left_ptr.add(n), *right_ptr.add(n));
+                };
+            }
+
+            return self;
         }
 
-        self
+        #[cfg(features = "nightly")]
+        {
+            let left_ptr: *mut u32x4 = self.as_mut_ptr().cast();
+            let right_ptr: *const u32x4 = other.as_ptr().cast();
+
+            for n in 0..(self.capacity() / (32 * u32x4::lanes())) {
+                unsafe {
+                    *left_ptr.add(n) = *left_ptr.add(n) & *right_ptr.add(n);
+                };
+            }
+
+            return self;
+        }
+
+        unimplemented!()
     }
 
     #[inline]
@@ -90,18 +182,16 @@ impl<'a> BitVec<'a> {
         let (offset, bit) = calc_bit(index);
 
         let ptr = self.as_mut_ptr().add(offset);
-        if value {
-            *ptr |= 1 << bit;
-        } else {
-            *ptr &= (1 << bit);
-        }
+        let num: u32 = value as u32;
+
+        *ptr = (*ptr & !(1 << bit)) | (num << bit);
     }
 
     #[inline]
     pub unsafe fn toggle_unchecked(&mut self, index: usize) {
         let (offset, bit) = calc_bit(index);
 
-        *self.as_mut_ptr().add(offset) ^= (1 << bit);
+        *self.as_mut_ptr().add(offset) ^= 1 << bit;
     }
 
     #[inline]
@@ -118,7 +208,7 @@ impl<'a> BitVec<'a> {
         let ptr = self.as_mut_ptr().add(offset);
         let old = (*ptr >> bit) & 1 != 0;
 
-        *ptr ^= (1 << bit);
+        *ptr ^= 1 << bit;
 
         old
     }

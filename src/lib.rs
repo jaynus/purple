@@ -1,7 +1,7 @@
 use std::{
     alloc::{alloc_zeroed, Layout},
     marker::PhantomData,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Index, IndexMut},
     ptr::NonNull,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -38,6 +38,26 @@ impl<'a> ScopedRawBuffer<'a> {
     fn new(arena: &'a Arena, ptr: NonNull<u8>, tail: NonNull<u8>) -> Self {
         Self { arena, ptr, tail }
     }
+
+    #[inline]
+    pub fn as_slice<T>(&self) -> &[T] {
+        unsafe {
+            std::slice::from_raw_parts::<T>(
+                self.ptr.as_ptr().cast(),
+                (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize,
+            )
+        }
+    }
+
+    #[inline]
+    pub fn as_mut_slice<T>(&mut self) -> &mut [T] {
+        unsafe {
+            std::slice::from_raw_parts_mut::<T>(
+                self.ptr.as_ptr().cast(),
+                (self.tail.as_ptr().sub(self.ptr().as_ptr() as usize)) as usize,
+            )
+        }
+    }
 }
 impl<'a> Dispose for ScopedRawBuffer<'a> {
     fn dispose(mut self) -> Result<(), ArenaError> {
@@ -70,7 +90,32 @@ impl<'a, T> ScopedBuffer<'a, T> {
             _marker: Default::default(),
         }
     }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[T] {
+        self.inner.as_slice::<T>()
+    }
+
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        self.inner.as_mut_slice::<T>()
+    }
 }
+
+impl<'a, T> Index<usize> for ScopedBuffer<'a, T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
+
+impl<'a, T> IndexMut<usize> for ScopedBuffer<'a, T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.as_mut_slice()[index]
+    }
+}
+
 impl<'a, T> Dispose for ScopedBuffer<'a, T> {
     fn dispose(self) -> Result<(), ArenaError> {
         self.inner.dispose()

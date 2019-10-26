@@ -7,13 +7,14 @@ description = "placeholder for a library"
 license = "MIT"
 
 [features]
+nightly = [ "packed_simd" ]
 
 [dependencies]
 log = "0.4"
 serde = { version = "1", optional = true }
 derivative = "1.0"
 rayon = "1.2"
-packed_simd = "0.3"
+packed_simd = { version = "0.3", optional = true }
 
 [dev-dependencies]
 criterion = "0.3"
