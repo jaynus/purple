@@ -122,16 +122,16 @@ mod tests {
 
     fn test_bitvec(size: usize, arena: &Arena) {
         let mut vec = BitVec::with_capacity_in(&arena, size);
-        for n in 0..32 {
+        for n in 0..size * 32 {
             assert!(vec.get(n).unwrap() == false);
         }
 
-        for n in 0..32 {
+        for n in 0..size * 32 {
             vec.set(n, true).unwrap();
             assert!(vec.get(n).unwrap());
         }
 
-        for n in 0..32 {
+        for n in 0..size * 32 {
             vec.toggle(n).unwrap();
             assert!(vec.get(n).unwrap() == false);
         }
