@@ -261,7 +261,12 @@ impl Arena {
         let size = Self::align_size(layout);
 
         let mut current = self.tail.load(Ordering::SeqCst);
-        let mut new_tail = unsafe { current.add(size) };
+
+        // Bump the new tail to ALIGNED size
+        let offset = current.align_offset(layout.align());
+
+        let mut new_tail = unsafe { current.add(size + offset) };
+
         loop {
             match self.tail.compare_exchange_weak(
                 current,
@@ -285,7 +290,7 @@ impl Arena {
         }
         unsafe {
             (
-                NonNull::new_unchecked(current as *mut T),
+                NonNull::new_unchecked(current.add(offset) as *mut T),
                 NonNull::new_unchecked(new_tail),
                 size,
             )

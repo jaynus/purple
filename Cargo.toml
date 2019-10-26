@@ -13,6 +13,7 @@ log = "0.4"
 serde = { version = "1", optional = true }
 derivative = "1.0"
 rayon = "1.2"
+packed_simd = "0.3"
 
 [dev-dependencies]
 criterion = "0.3"
