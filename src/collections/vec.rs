@@ -106,32 +106,30 @@ impl<'a, T> Vec<'a, T> {
         }
     }
 
+    #[inline]
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
+        &*self.as_ptr().add(index)
+    }
+
+    #[inline]
+    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
+        &mut *self.as_mut_ptr().add(index)
+    }
+
+    #[inline]
     pub fn get(&self, index: usize) -> Option<&T> {
         if index >= self.size {
             return None;
         }
-
-        Some(unsafe {
-            &*(self
-                .buffer
-                .ptr
-                .as_ptr()
-                .add(index * std::mem::size_of::<T>()) as *const T)
-        })
+        unsafe { Some(self.get_unchecked(index)) }
     }
 
+    #[inline]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index >= self.size {
             return None;
         }
-
-        Some(unsafe {
-            &mut *(self
-                .buffer
-                .ptr
-                .as_ptr()
-                .add(index * std::mem::size_of::<T>()) as *mut T)
-        })
+        unsafe { Some(self.get_unchecked_mut(index)) }
     }
 
     pub fn iter(&self) -> VecIter<'_, T> {
@@ -270,12 +268,17 @@ impl<'a, T: PartialEq> Vec<'a, T> {
 
 pub struct VecIter<'a, T> {
     inner: &'a Vec<'a, T>,
-    cur: usize,
+    head: usize,
+    tail: usize,
 }
 
 impl<'a, T> VecIter<'a, T> {
     pub fn new(inner: &'a Vec<'a, T>) -> Self {
-        Self { inner, cur: 0 }
+        Self {
+            inner,
+            head: 0,
+            tail: inner.len(),
+        }
     }
 }
 
@@ -283,32 +286,35 @@ impl<'a, T> Iterator for VecIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.cur;
-        if self.cur >= self.inner.size {
-            return None;
+        if self.head < self.tail {
+            let next = self.head;
+            self.head += 1;
+            unsafe { Some(self.inner.get_unchecked(next)) }
+        } else {
+            None
         }
-        self.cur += 1;
-
-        self.inner.get(next)
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.inner.size))
+        (self.len(), Some(self.len()))
+    }
+}
+
+impl<'a, T> ExactSizeIterator for VecIter<'a, T> {
+    fn len(&self) -> usize {
+        self.tail - self.head
     }
 }
 
 impl<'a, T> DoubleEndedIterator for VecIter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let next = self.cur;
-
-        if self.cur.checked_sub(1).is_none() {
-            return None;
+        if self.head < self.tail {
+            self.tail -= 1;
+            unsafe { Some(self.inner.get_unchecked(self.tail)) }
+        } else {
+            None
         }
-
-        self.cur -= 1;
-
-        self.inner.get(next)
     }
 }
 
@@ -601,10 +607,10 @@ mod tests {
             .for_each(|(i, v)| assert_eq!(*v, *test_values.get(i).unwrap()));
 
         assert_eq!(test_values.len(), vec.iter().count());
-        assert_eq!(test_values.len(), vec.iter().count());
+        assert_eq!(test_values.len(), vec.iter().rev().count());
 
-        //assert_eq!(test_values.len(), vec.iter().rev().count());
-        //assert_eq!(test_values.len(), vec.iter_mut().rev().count());
+        assert_eq!(test_values.len(), vec.iter().rev().count());
+        assert_eq!(test_values.len(), vec.iter_mut().rev().count());
     }
 
     #[test]

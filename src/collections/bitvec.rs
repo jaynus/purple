@@ -20,7 +20,7 @@ impl<'a> BitVec<'a> {
         let step_bits = intrin_size * 8;
         capacity = (capacity + step_bits) - (capacity % step_bits);
 
-        let internal_capacity = capacity / 32;
+        let internal_capacity = capacity / 8;
 
         let mut layout = Layout::from_size_align(internal_capacity, intrin_size).unwrap();
 
