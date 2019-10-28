@@ -1,10 +1,8 @@
 use super::alloc::{Layout, UnstableLayoutMethods};
 use crate::*;
-use rayon::iter::ParallelIterator;
 use std::marker::PhantomData;
 
 pub struct Vec<'a, T> {
-    arena: &'a Arena,
     buffer: ScopedRawBuffer<'a>,
     capacity: usize,
     size: usize,
@@ -15,7 +13,6 @@ impl<'a, T> Vec<'a, T> {
         let buffer = arena.alloc_scoped_raw(Layout::array::<T>(capacity).unwrap());
 
         Self {
-            arena,
             buffer,
             capacity,
             size: 0,
@@ -101,8 +98,8 @@ impl<'a, T> Vec<'a, T> {
             None
         } else {
             self.size -= 1;
-            //Some(self.get(self.len()).unwrap()) TODO: Return old values
-            None
+            let value = unsafe { std::ptr::read(self.as_ptr().add(self.size)) };
+            Some(value)
         }
     }
 
@@ -132,23 +129,11 @@ impl<'a, T> Vec<'a, T> {
         unsafe { Some(self.get_unchecked_mut(index)) }
     }
 
-    pub fn iter(&self) -> VecIter<'_, T> {
-        VecIter::new(self)
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.as_slice().iter()
     }
-    pub fn iter_mut(&mut self) -> VecIterMut<'_, T> {
-        unsafe {
-            VecIterMut {
-                begin: self.buffer.ptr.as_ptr().cast(),
-                ptr: self.buffer.ptr.as_ptr().cast(),
-                end: self
-                    .buffer
-                    .ptr
-                    .as_ptr()
-                    .add(self.size * std::mem::size_of::<T>())
-                    .cast(),
-                _marker: Default::default(),
-            }
-        }
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+        self.as_mut_slice().iter_mut()
     }
 
     pub fn as_slice(&self) -> &[T] {
@@ -266,102 +251,6 @@ impl<'a, T: PartialEq> Vec<'a, T> {
     }
 }
 
-pub struct VecIter<'a, T> {
-    inner: &'a Vec<'a, T>,
-    head: usize,
-    tail: usize,
-}
-
-impl<'a, T> VecIter<'a, T> {
-    pub fn new(inner: &'a Vec<'a, T>) -> Self {
-        Self {
-            inner,
-            head: 0,
-            tail: inner.len(),
-        }
-    }
-}
-
-impl<'a, T> Iterator for VecIter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.head < self.tail {
-            let next = self.head;
-            self.head += 1;
-            unsafe { Some(self.inner.get_unchecked(next)) }
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len(), Some(self.len()))
-    }
-}
-
-impl<'a, T> ExactSizeIterator for VecIter<'a, T> {
-    fn len(&self) -> usize {
-        self.tail - self.head
-    }
-}
-
-impl<'a, T> DoubleEndedIterator for VecIter<'a, T> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.head < self.tail {
-            self.tail -= 1;
-            unsafe { Some(self.inner.get_unchecked(self.tail)) }
-        } else {
-            None
-        }
-    }
-}
-
-pub struct VecIterMut<'a, T> {
-    begin: *mut T,
-    ptr: *mut T,
-    end: *mut T,
-    _marker: PhantomData<&'a T>,
-}
-
-impl<'a, T> Iterator for VecIterMut<'a, T> {
-    type Item = &'a mut T;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        let fetch = self.ptr;
-        if fetch >= self.end {
-            return None;
-        }
-
-        self.ptr = unsafe { self.ptr.add(std::mem::size_of::<T>()) };
-
-        Some(unsafe { &mut *fetch.cast() })
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (
-            0,
-            Some(unsafe { self.end.sub(self.ptr as usize) as usize / std::mem::size_of::<T>() }),
-        )
-    }
-}
-
-impl<'a, T> DoubleEndedIterator for VecIterMut<'a, T> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let fetch = self.ptr;
-        if self.ptr < self.begin {
-            return None;
-        }
-
-        self.ptr = unsafe { self.ptr.sub(std::mem::size_of::<T>()) };
-
-        Some(unsafe { &mut *fetch.cast() })
-    }
-}
-
 pub trait FromIteratorIn<'a, T> {
     fn from_iter_in<I: 'a + IntoIterator<Item = T> + ExactSizeIterator>(
         arena: &'a Arena,
@@ -376,7 +265,7 @@ impl<'a, T> FromIteratorIn<'a, T> for Vec<'a, T> {
         let mut c = Vec::with_capacity_in(&arena, iter.len());
 
         for i in iter {
-            c.push(i);
+            c.push(i).unwrap();
         }
 
         c
@@ -597,19 +486,25 @@ mod tests {
 
         // Test reverse iteration
         vec.iter()
-            .rev()
             .enumerate()
+            .rev()
             .for_each(|(i, v)| assert_eq!(*v, *test_values.get(i).unwrap()));
 
         vec.iter_mut()
-            .rev()
             .enumerate()
+            .rev()
             .for_each(|(i, v)| assert_eq!(*v, *test_values.get(i).unwrap()));
+
+        assert_eq!(Some(&TestType { value: 3 }), vec.iter().rev().next());
+        assert_eq!(
+            Some(&mut TestType { value: 3 }),
+            vec.iter_mut().rev().next()
+        );
 
         assert_eq!(test_values.len(), vec.iter().count());
         assert_eq!(test_values.len(), vec.iter().rev().count());
 
-        assert_eq!(test_values.len(), vec.iter().rev().count());
+        assert_eq!(test_values.len(), vec.iter_mut().rev().count());
         assert_eq!(test_values.len(), vec.iter_mut().rev().count());
     }
 
