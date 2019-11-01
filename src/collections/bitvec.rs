@@ -54,9 +54,13 @@ impl<'a> BitVec<'a> {
     }
 
     /// `src`, `dst` and `len` must be 64 bit aligned
-    pub fn or_subslice_aligned(&mut self, dst: usize, src: usize, len: usize) {
+    pub fn or_subslice_aligned(&mut self, dst: u32, src: u32, len: u32) {
         debug_assert!(dst % 64 == 0);
         debug_assert!(src % 64 == 0);
+
+        let dst = (dst / 64) as usize;
+        let src = (src / 64) as usize;
+        let len = len as usize;
 
         const BITS_PER_SIMD: usize = (std::mem::size_of::<u64>() * 2) * 8;
 
@@ -64,8 +68,8 @@ impl<'a> BitVec<'a> {
             #[cfg(features = "nightly")]
             {
                 unsafe {
-                    let left_ptr: *mut u64x2 = self.as_mut_ptr().add(dst / 64).cast();
-                    let right_ptr: *const u64x2 = self.as_ptr().add(src / 64).cast();
+                    let left_ptr: *mut u64x2 = self.as_mut_ptr().add(dst).cast();
+                    let right_ptr: *const u64x2 = self.as_ptr().add(src).cast();
                     *left_ptr = *left_ptr | *right_ptr;
                 }
 
@@ -81,8 +85,8 @@ impl<'a> BitVec<'a> {
                 use std::arch::x86_64::*;
 
                 unsafe {
-                    let left_ptr: *mut __m128i = self.as_mut_ptr().add(dst / 64).cast();
-                    let right_ptr: *const __m128i = self.as_ptr().add(src / 64).cast();
+                    let left_ptr: *mut __m128i = self.as_mut_ptr().add(dst).cast();
+                    let right_ptr: *const __m128i = self.as_ptr().add(src).cast();
 
                     *left_ptr = _mm_or_si128(*left_ptr, *right_ptr);
                 }
@@ -91,9 +95,6 @@ impl<'a> BitVec<'a> {
         }
 
         let slice = self.buffer.as_mut_slice::<u64>();
-
-        let dst = dst / 64;
-        let src = src / 64;
 
         let mut bit = 0;
         while bit < len {
