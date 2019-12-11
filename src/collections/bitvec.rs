@@ -94,7 +94,9 @@ impl<'a> BitVec<'a> {
             }
         }
 
-        let slice = self.buffer.as_mut_slice::<u64>();
+        // Safe because we know we allocated the buffer specifically to hold [u64] and it isn't
+        // accessed otherwise.
+        let slice = unsafe { self.buffer.as_mut_slice::<u64>() };
 
         let mut bit = 0;
         while bit < len {
