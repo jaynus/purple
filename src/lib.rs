@@ -27,7 +27,9 @@ pub trait Dispose {
 /// runtime checks in all allocations or a mutex, while still allowing for the case of a temporary allocation and
 /// deallocation inside the arena in a short scoped amount of time.
 ///
-/// SAFETY: Drop implementation will silently leak frame-scoped memory.
+/// # Safety
+///
+/// Drop implementation will silently leak frame-scoped memory.
 /// This buffer may leak memory until the next `reset`
 struct ScopedRawBuffer<'a> {
     arena: &'a Arena,
@@ -41,9 +43,11 @@ impl<'a> ScopedRawBuffer<'a> {
 
     /// # Safety
     ///
-    /// It must be safe to transmute the data pointed to by this `ScopedRawBuffer` into
-    /// a `&[T]`. This means that the buffer must literally hold an `&[T]` OR
+    /// This function is *VERY* unsafe. In order to be safe, it requires that it must be
+    /// safe to transmute the data pointed to by this `ScopedRawBuffer` into
+    /// a `&[T]`. This means that the buffer must literally hold an `[T]` OR
     ///
+    /// * The buffer size must be a multiple of `mem::size_of::<T>()` (this is NOT checked at runtime)
     /// * Both types must be inhabited (i.e. no Infallible/`!` types)
     /// * Both types must allow any bit pattern, OR you must be certain that converting from
     /// the type inside this buffer to `&[T]` will not yield an invalid bit pattern for `T`
@@ -53,18 +57,20 @@ impl<'a> ScopedRawBuffer<'a> {
     /// * Both types must be repr(c), repr(transparent) or repr(packed)
     /// * All of both types' fields must also follow the above rules.
     #[inline]
-    pub unsafe fn as_slice<T>(&self) -> &[T] {
-        std::slice::from_raw_parts::<T>(
-            self.ptr.as_ptr().cast(),
-            (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize,
-        )
+    pub unsafe fn as_slice<'s, T>(&'s self) -> &'s [T] {
+        let size = self.tail.as_ptr() as usize - self.ptr.as_ptr() as usize;
+        let len = size / std::mem::size_of::<T>();
+
+        std::slice::from_raw_parts::<T>(self.ptr.as_ptr().cast(), len)
     }
 
     /// # Safety
     ///
-    /// It must be safe to transmute the data pointed to by this `ScopedRawBuffer` into
-    /// a `&[T]`. This means that the buffer must literally hold an `&[T]` OR
+    /// This function is *VERY* unsafe. In order to be safe, it requires that it must be
+    /// safe to transmute the data pointed to by this `ScopedRawBuffer` into
+    /// a `&[T]`. This means that the buffer must literally hold an `[T]` OR
     ///
+    /// * The buffer size must be a multiple of `mem::size_of::<T>()` (this is NOT checked at runtime)
     /// * Both types must be inhabited (i.e. no Infallible/`!` types)
     /// * Both types must allow any bit pattern, OR you must be certain that converting from
     /// the type inside this buffer to `&[T]` will not yield an invalid bit pattern for `T`
@@ -74,11 +80,11 @@ impl<'a> ScopedRawBuffer<'a> {
     /// * Both types must be repr(c), repr(transparent) or repr(packed)
     /// * All of both types' fields must also follow the above rules.
     #[inline]
-    pub unsafe fn as_mut_slice<T>(&mut self) -> &mut [T] {
-        std::slice::from_raw_parts_mut::<T>(
-            self.ptr.as_ptr().cast(),
-            (self.tail.as_ptr().sub(self.ptr().as_ptr() as usize)) as usize,
-        )
+    pub unsafe fn as_mut_slice<'s, T>(&'s mut self) -> &'s mut [T] {
+        let size = self.tail.as_ptr() as usize - self.ptr.as_ptr() as usize;
+        let len = size / std::mem::size_of::<T>();
+
+        std::slice::from_raw_parts_mut::<T>(self.ptr.as_ptr().cast(), len)
     }
 }
 
@@ -110,9 +116,11 @@ pub struct ScopedBuffer<'a, T> {
 impl<'a, T> ScopedBuffer<'a, T> {
     /// # Safety
     ///
-    /// It must be safe to transmute the data pointed to by this `ScopedRawBuffer` into
-    /// a `&[T]`. This means that the buffer must literally hold an `&[T]` OR
+    /// This function is *VERY* unsafe. In order to be safe, it must be
+    /// safe to transmute the data pointed to by the inner `ScopedRawBuffer` into
+    /// a `&[T]`. This means that the buffer must literally hold an `[T]` OR
     ///
+    /// * The buffer size must be a multiple of `mem::size_of::<T>()` (this is NOT checked at runtime)
     /// * Both types must be inhabited (i.e. no Infallible/`!` types)
     /// * Both types must allow any bit pattern, OR you must be certain that converting from
     /// the type inside this buffer to `&[T]` will not yield an invalid bit pattern for `T`
@@ -130,11 +138,13 @@ impl<'a, T> ScopedBuffer<'a, T> {
 
     #[inline]
     pub fn as_slice(&self) -> &[T] {
+        // The safety conditions for this must be met upon creation of a ScopedBuffer
         unsafe { self.inner.as_slice::<T>() }
     }
 
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // The safety conditions for this must be met upon creation of a ScopedBuffer
         unsafe { self.inner.as_mut_slice::<T>() }
     }
 }
