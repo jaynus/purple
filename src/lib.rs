@@ -1,3 +1,5 @@
+#![allow(dead_code, unstable_name_collisions)]
+
 use std::{
     alloc::{alloc_zeroed, Layout},
     marker::PhantomData,
@@ -74,7 +76,7 @@ impl<'a> Drop for ScopedRawBuffer<'a> {
     // We cant call our regular consuming `dispose` because of drop impl. However, because its drop being called
     // we can still assume we are consumed and so it is safe to invalidate ourselves here.
     fn drop(&mut self) {
-        self.arena.try_dispose(self);
+        self.arena.try_dispose(self).unwrap();
     }
 }
 
@@ -212,7 +214,7 @@ impl Arena {
 
     #[inline(always)]
     fn alloc_scoped_raw<'a>(&'a self, layout: Layout) -> ScopedRawBuffer<'a> {
-        let (ptr, tail, size) = self.bump(layout);
+        let (ptr, tail, _) = self.bump(layout);
         ScopedRawBuffer::new(self, ptr, tail)
     }
 
