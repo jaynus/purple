@@ -221,7 +221,6 @@ impl Arena {
     }
 
     pub(crate) fn alloc_raw<T>(&self, layout: Layout) -> NonNull<T> {
-        log::trace!("alloc_raw: {:?}", layout);
         self.bump::<T>(layout).0
     }
 
@@ -305,8 +304,6 @@ impl Arena {
 
     #[inline(always)]
     pub(crate) fn bump<T>(&self, layout: Layout) -> (NonNull<T>, NonNull<u8>, usize) {
-        log::trace!("bump: {:?}", layout);
-
         let size = Self::align_size(layout);
 
         let mut current = self.tail.load(Ordering::SeqCst);
