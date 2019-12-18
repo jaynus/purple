@@ -187,7 +187,7 @@ impl Arena {
     }
 
     #[inline(always)]
-    pub fn alloc_scoped<'a, T>(&'a self, value: T) -> ScopedBuffer<'a, T> {
+    pub fn alloc_scoped<T>(&self, value: T) -> ScopedBuffer<'_, T> {
         #[inline(always)]
         unsafe fn inner_writer<T, F>(ptr: NonNull<T>, f: F)
         where
@@ -215,7 +215,7 @@ impl Arena {
     }
 
     #[inline(always)]
-    fn alloc_scoped_raw<'a>(&'a self, layout: Layout) -> ScopedRawBuffer<'a> {
+    fn alloc_scoped_raw(&self, layout: Layout) -> ScopedRawBuffer<'_> {
         let (ptr, tail, _) = self.bump(layout);
         ScopedRawBuffer::new(self, ptr, tail)
     }
@@ -229,11 +229,13 @@ impl Arena {
     }
 
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T>(&self, value: T) -> &mut T {
         self.alloc_with(|| value)
     }
 
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc_with<F, T>(&self, f: F) -> &mut T
     where
         F: FnOnce() -> T,
@@ -297,6 +299,11 @@ impl Arena {
         }
     }
 
+    /// Clear this Arena.
+    ///
+    /// # Safety
+    /// This will invalidate all active allocations from this Arena. It is up to the user to properly not use any raw allocated
+    /// data out of this Arena after a reset.
     #[inline]
     pub unsafe fn reset(&mut self) {
         *self.tail.get_mut() = self.head.as_ptr();

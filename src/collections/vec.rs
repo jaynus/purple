@@ -94,7 +94,7 @@ impl<'a, T> Vec<'a, T> {
     }
 
     pub fn pop(&mut self) -> Option<T> {
-        if self.len() == 0 {
+        if self.is_empty() {
             None
         } else {
             self.size -= 1;
@@ -103,11 +103,19 @@ impl<'a, T> Vec<'a, T> {
         }
     }
 
+    /// Gets an index of the vector, not checking size
+    ///
+    /// # Safety
+    /// It is up to the user to perform validation of the index being within the bounds of this Vec.
     #[inline]
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
         &*self.as_ptr().add(index)
     }
 
+    /// Gets an index of the vector, not checking size
+    ///
+    /// # Safety
+    /// It is up to the user to perform validation of the index being within the bounds of this Vec.
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
         &mut *self.as_mut_ptr().add(index)
@@ -405,7 +413,7 @@ impl<'a> SetLenOnDrop<'a> {
     fn new(len: &'a mut usize) -> Self {
         SetLenOnDrop {
             local_len: *len,
-            len: len,
+            len,
         }
     }
 
