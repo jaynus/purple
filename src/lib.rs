@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unstable_name_collisions)]
 
 use std::{
     alloc::{alloc_zeroed, Layout},
@@ -216,7 +216,7 @@ impl Arena {
 
     #[inline(always)]
     fn alloc_scoped_raw<'a>(&'a self, layout: Layout) -> ScopedRawBuffer<'a> {
-        let (ptr, tail, size) = self.bump(layout);
+        let (ptr, tail, _) = self.bump(layout);
         ScopedRawBuffer::new(self, ptr, tail)
     }
 

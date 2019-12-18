@@ -1,5 +1,4 @@
 use super::alloc::*;
-use crate::collections::Vec;
 use crate::*;
 
 #[cfg(feature = "nightly")]
@@ -149,8 +148,6 @@ impl<'a> BitVec<'a> {
 
             return self;
         }
-
-        unimplemented!()
     }
 
     #[inline]
@@ -168,7 +165,7 @@ impl<'a> BitVec<'a> {
                 };
             }
 
-            return self;
+            self
         }
 
         #[target_feature(enable = "sse2")]
@@ -190,8 +187,6 @@ impl<'a> BitVec<'a> {
 
             return self;
         }
-
-        unimplemented!()
     }
 
     #[inline]
