@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     alloc::{alloc_zeroed, Layout},
     marker::PhantomData,
@@ -44,7 +46,8 @@ impl<'a> ScopedRawBuffer<'a> {
         unsafe {
             std::slice::from_raw_parts::<T>(
                 self.ptr.as_ptr().cast(),
-                (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize,
+                (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize // len in bytes
+                    / std::mem::size_of::<T>(), // convert to len in T
             )
         }
     }
@@ -54,7 +57,8 @@ impl<'a> ScopedRawBuffer<'a> {
         unsafe {
             std::slice::from_raw_parts_mut::<T>(
                 self.ptr.as_ptr().cast(),
-                (self.tail.as_ptr().sub(self.ptr().as_ptr() as usize)) as usize,
+                (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize // len in bytes
+                    / std::mem::size_of::<T>(), // convert to len in T
             )
         }
     }
@@ -74,7 +78,7 @@ impl<'a> Drop for ScopedRawBuffer<'a> {
     // We cant call our regular consuming `dispose` because of drop impl. However, because its drop being called
     // we can still assume we are consumed and so it is safe to invalidate ourselves here.
     fn drop(&mut self) {
-        self.arena.try_dispose(self);
+        self.arena.try_dispose(self).unwrap();
     }
 }
 
