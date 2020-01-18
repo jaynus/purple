@@ -29,7 +29,9 @@ pub trait Dispose {
 /// runtime checks in all allocations or a mutex, while still allowing for the case of a temporary allocation and
 /// deallocation inside the arena in a short scoped amount of time.
 ///
-/// SAFETY: Drop implementation will silently leak frame-scoped memory.
+/// # Safety
+///
+/// Drop implementation will silently leak frame-scoped memory.
 /// This buffer may leak memory until the next `reset`
 struct ScopedRawBuffer<'a> {
     arena: &'a Arena,
@@ -41,28 +43,54 @@ impl<'a> ScopedRawBuffer<'a> {
         Self { arena, ptr, tail }
     }
 
+    /// # Safety
+    ///
+    /// This function is *VERY* unsafe. In order to be safe, it requires that it must be
+    /// safe to transmute the data pointed to by this `ScopedRawBuffer` into
+    /// a `&[T]`. This means that the buffer must literally hold an `[T]` OR
+    ///
+    /// * The buffer size must be a multiple of `mem::size_of::<T>()` (this is NOT checked at runtime)
+    /// * Both types must be inhabited (i.e. no Infallible/`!` types)
+    /// * Both types must allow any bit pattern, OR you must be certain that converting from
+    /// the type inside this buffer to `&[T]` will not yield an invalid bit pattern for `T`
+    /// * Both types must not contain any padding bytes, either in the middle or on the end
+    /// (i.e. extra bytes caused by sizeof one of the fields being < alignof(T)), OR you must
+    /// be certain that the types have the same pattern of padding bytes.
+    /// * Both types must be repr(c), repr(transparent) or repr(packed)
+    /// * All of both types' fields must also follow the above rules.
     #[inline]
-    pub fn as_slice<T>(&self) -> &[T] {
-        unsafe {
-            std::slice::from_raw_parts::<T>(
-                self.ptr.as_ptr().cast(),
-                (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize // len in bytes
-                    / std::mem::size_of::<T>(), // convert to len in T
-            )
-        }
+    pub unsafe fn as_slice<'s, T>(&'s self) -> &'s [T] {
+        let size = self.tail.as_ptr() as usize - self.ptr.as_ptr() as usize;
+        let len = size / std::mem::size_of::<T>();
+
+        std::slice::from_raw_parts::<T>(self.ptr.as_ptr().cast(), len)
     }
 
+    /// # Safety
+    ///
+    /// This function is *VERY* unsafe. In order to be safe, it requires that it must be
+    /// safe to transmute the data pointed to by this `ScopedRawBuffer` into
+    /// a `&[T]`. This means that the buffer must literally hold an `[T]` OR
+    ///
+    /// * The buffer size must be a multiple of `mem::size_of::<T>()` (this is NOT checked at runtime)
+    /// * Both types must be inhabited (i.e. no Infallible/`!` types)
+    /// * Both types must allow any bit pattern, OR you must be certain that converting from
+    /// the type inside this buffer to `&[T]` will not yield an invalid bit pattern for `T`
+    /// * Both types must not contain any padding bytes, either in the middle or on the end
+    /// (i.e. extra bytes caused by sizeof one of the fields being < alignof(T)), OR you must
+    /// be certain that the types have the same pattern of padding bytes.
+    /// * Both types must be repr(c), repr(transparent) or repr(packed)
+    /// * All of both types' fields must also follow the above rules.
     #[inline]
-    pub fn as_mut_slice<T>(&mut self) -> &mut [T] {
-        unsafe {
-            std::slice::from_raw_parts_mut::<T>(
-                self.ptr.as_ptr().cast(),
-                (self.tail.as_ptr().sub(self.ptr.as_ptr() as usize)) as usize // len in bytes
-                    / std::mem::size_of::<T>(), // convert to len in T
-            )
-        }
+
+    pub unsafe fn as_mut_slice<'s, T>(&'s mut self) -> &'s mut [T] {
+        let size = self.tail.as_ptr() as usize - self.ptr.as_ptr() as usize;
+        let len = size / std::mem::size_of::<T>();
+
+        std::slice::from_raw_parts_mut::<T>(self.ptr.as_ptr().cast(), len)
     }
 }
+
 impl<'a> Dispose for ScopedRawBuffer<'a> {
     fn dispose(mut self) -> Result<(), ArenaError> {
         self.arena.try_dispose(&mut self)
@@ -87,8 +115,24 @@ pub struct ScopedBuffer<'a, T> {
     inner: ScopedRawBuffer<'a>,
     _marker: PhantomData<T>,
 }
+
 impl<'a, T> ScopedBuffer<'a, T> {
-    fn new(inner: ScopedRawBuffer<'a>) -> Self {
+    /// # Safety
+    ///
+    /// This function is *VERY* unsafe. In order to be safe, it must be
+    /// safe to transmute the data pointed to by the inner `ScopedRawBuffer` into
+    /// a `&[T]`. This means that the buffer must literally hold an `[T]` OR
+    ///
+    /// * The buffer size must be a multiple of `mem::size_of::<T>()` (this is NOT checked at runtime)
+    /// * Both types must be inhabited (i.e. no Infallible/`!` types)
+    /// * Both types must allow any bit pattern, OR you must be certain that converting from
+    /// the type inside this buffer to `&[T]` will not yield an invalid bit pattern for `T`
+    /// * Both types must not contain any padding bytes, either in the middle or on the end
+    /// (i.e. extra bytes caused by sizeof one of the fields being < alignof(T)), OR you must
+    /// be certain that the types have the same pattern of padding bytes.
+    /// * Both types must be repr(c), repr(transparent) or repr(packed)
+    /// * All of both types' fields must also follow the above rules.
+    unsafe fn new(inner: ScopedRawBuffer<'a>) -> Self {
         Self {
             inner,
             _marker: Default::default(),
@@ -97,12 +141,14 @@ impl<'a, T> ScopedBuffer<'a, T> {
 
     #[inline]
     pub fn as_slice(&self) -> &[T] {
-        self.inner.as_slice::<T>()
+        // The safety conditions for this must be met upon creation of a ScopedBuffer
+        unsafe { self.inner.as_slice::<T>() }
     }
 
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        self.inner.as_mut_slice::<T>()
+        // The safety conditions for this must be met upon creation of a ScopedBuffer
+        unsafe { self.inner.as_mut_slice::<T>() }
     }
 }
 
@@ -211,12 +257,50 @@ impl Arena {
         unsafe {
             inner_writer(raw.ptr.cast(), || value);
         }
-        ScopedBuffer::new(raw)
+        unsafe { ScopedBuffer::new(raw) }
     }
 
     #[inline(always)]
-    fn alloc_scoped_raw(&self, layout: Layout) -> ScopedRawBuffer<'_> {
-        let (ptr, tail, _) = self.bump(layout);
+    pub fn alloc_scoped_iter<'a, I, T>(&'a self, iter: I) -> ScopedBuffer<'a, T>
+    where
+        I: ExactSizeIterator<Item = T>,
+    {
+        #[inline(always)]
+        unsafe fn inner_writer<T, F>(ptr: NonNull<T>, f: F)
+        where
+            F: FnOnce() -> T,
+        {
+            // Taken from bumpalo
+
+            // This function is translated as:
+            // - allocate space for a T on the stack
+            // - call f() with the return value being put onto this stack space
+            // - memcpy from the stack to the heap
+            //
+            // Ideally we want LLVM to always realize that doing a stack
+            // allocation is unnecessary and optimize the code so it writes
+            // directly into the heap instead. It seems we get it to realize
+            // this most consistently if we put this critical line into it's
+            // own function instead of inlining it into the surrounding code.
+            std::ptr::write(ptr.as_ptr(), f())
+        }
+        let raw = self.alloc_scoped_raw(unsafe {
+            Layout::from_size_align_unchecked(
+                std::mem::size_of::<T>() * iter.len(),
+                std::mem::align_of::<T>(),
+            )
+        });
+        let mut ptr = raw.ptr.cast::<T>().as_ptr();
+        iter.for_each(|v| unsafe {
+            ptr = ptr.add(1);
+            inner_writer(NonNull::new_unchecked(ptr), || v);
+        });
+        unsafe { ScopedBuffer::new(raw) }
+    }
+
+    #[inline(always)]
+    fn alloc_scoped_raw<'a>(&'a self, layout: Layout) -> ScopedRawBuffer<'a> {
+        let (ptr, tail, _size) = self.bump(layout);
         ScopedRawBuffer::new(self, ptr, tail)
     }
 
