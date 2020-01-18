@@ -1,8 +1,10 @@
+/*
 use crate::*;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
 use super::Vec;
+
 
 pub struct Entry<K, T> {
     key: K,
@@ -43,3 +45,4 @@ impl<'a, K: Hash, T, H: Hasher> HashMap<'a, K, T, H> {
         unimplemented!()
     }
 }
+*/

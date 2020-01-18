@@ -1,3 +1,5 @@
+#![allow(dead_code, unstable_name_collisions)]
+
 use std::{
     alloc::{alloc_zeroed, Layout},
     marker::PhantomData,
@@ -80,6 +82,7 @@ impl<'a> ScopedRawBuffer<'a> {
     /// * Both types must be repr(c), repr(transparent) or repr(packed)
     /// * All of both types' fields must also follow the above rules.
     #[inline]
+
     pub unsafe fn as_mut_slice<'s, T>(&'s mut self) -> &'s mut [T] {
         let size = self.tail.as_ptr() as usize - self.ptr.as_ptr() as usize;
         let len = size / std::mem::size_of::<T>();
@@ -103,7 +106,7 @@ impl<'a> Drop for ScopedRawBuffer<'a> {
     // We cant call our regular consuming `dispose` because of drop impl. However, because its drop being called
     // we can still assume we are consumed and so it is safe to invalidate ourselves here.
     fn drop(&mut self) {
-        self.arena.try_dispose(self);
+        self.arena.try_dispose(self).unwrap();
     }
 }
 
@@ -230,7 +233,7 @@ impl Arena {
     }
 
     #[inline(always)]
-    pub fn alloc_scoped<'a, T>(&'a self, value: T) -> ScopedBuffer<'a, T> {
+    pub fn alloc_scoped<T>(&self, value: T) -> ScopedBuffer<'_, T> {
         #[inline(always)]
         unsafe fn inner_writer<T, F>(ptr: NonNull<T>, f: F)
         where
@@ -302,7 +305,6 @@ impl Arena {
     }
 
     pub(crate) fn alloc_raw<T>(&self, layout: Layout) -> NonNull<T> {
-        log::trace!("alloc_raw: {:?}", layout);
         self.bump::<T>(layout).0
     }
 
@@ -311,11 +313,13 @@ impl Arena {
     }
 
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T>(&self, value: T) -> &mut T {
         self.alloc_with(|| value)
     }
 
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc_with<F, T>(&self, f: F) -> &mut T
     where
         F: FnOnce() -> T,
@@ -379,6 +383,11 @@ impl Arena {
         }
     }
 
+    /// Clear this Arena.
+    ///
+    /// # Safety
+    /// This will invalidate all active allocations from this Arena. It is up to the user to properly not use any raw allocated
+    /// data out of this Arena after a reset.
     #[inline]
     pub unsafe fn reset(&mut self) {
         *self.tail.get_mut() = self.head.as_ptr();
@@ -386,8 +395,6 @@ impl Arena {
 
     #[inline(always)]
     pub(crate) fn bump<T>(&self, layout: Layout) -> (NonNull<T>, NonNull<u8>, usize) {
-        log::trace!("bump: {:?}", layout);
-
         let size = Self::align_size(layout);
 
         let mut current = self.tail.load(Ordering::SeqCst);

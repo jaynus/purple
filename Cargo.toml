@@ -10,12 +10,9 @@ license = "MIT"
 nightly = [ "packed_simd" ]
 
 [dependencies]
-log = "0.4"
 serde = { version = "1", optional = true }
-derivative = "1.0"
-rayon = "1.2"
+derivative = "1"
 packed_simd = { version = "0.3", optional = true }
 
 [dev-dependencies]
-criterion = "0.3"
-env_logger = "0.7"
+rayon = "1.2"

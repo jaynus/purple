@@ -1,5 +1,4 @@
 use super::alloc::*;
-use crate::collections::Vec;
 use crate::*;
 
 #[cfg(feature = "nightly")]
@@ -103,7 +102,7 @@ impl<'a> BitVec<'a> {
             let src_idx = src + (bit / 64);
             let dst_idx = dst + (bit / 64);
             if len - bit >= 64 {
-                slice[dst_idx] = slice[dst_idx] | slice[src_idx];
+                slice[dst_idx] |= slice[src_idx];
                 bit += 64;
             } else {
                 slice[dst_idx] = slice[dst_idx] >> bit as u64 | slice[src_idx];
@@ -149,10 +148,8 @@ impl<'a> BitVec<'a> {
                 };
             }
 
-            return self;
+            self
         }
-
-        unimplemented!()
     }
 
     #[inline]
@@ -170,7 +167,7 @@ impl<'a> BitVec<'a> {
                 };
             }
 
-            return self;
+            self
         }
 
         #[target_feature(enable = "sse2")]
@@ -190,12 +187,14 @@ impl<'a> BitVec<'a> {
                 };
             }
 
-            return self;
+            self
         }
-
-        unimplemented!()
     }
 
+    /// Sets an index of the vector, not checking size
+    ///
+    /// # Safety
+    /// It is up to the user to perform validation of the index being within the bounds of this Vec.
     #[inline]
     pub unsafe fn set_unchecked(&mut self, index: u32, value: bool) {
         let (offset, bit) = calc_bit(index);
@@ -206,6 +205,10 @@ impl<'a> BitVec<'a> {
         *ptr = (*ptr & !(1 << bit)) | (num << bit);
     }
 
+    /// Toggles an index of the vector, not checking size
+    ///
+    /// # Safety
+    /// It is up to the user to perform validation of the index being within the bounds.
     #[inline]
     pub unsafe fn toggle_unchecked(&mut self, index: u32) {
         let (offset, bit) = calc_bit(index);
@@ -213,6 +216,10 @@ impl<'a> BitVec<'a> {
         *self.as_mut_ptr().add(offset) ^= 1 << bit;
     }
 
+    /// Gets an index of the vector, not checking size
+    ///
+    /// # Safety
+    /// It is up to the user to perform validation of the index being within the bounds.
     #[inline]
     pub unsafe fn get_unchecked(&self, index: u32) -> bool {
         let (offset, bit) = calc_bit(index);
@@ -220,7 +227,12 @@ impl<'a> BitVec<'a> {
         ((*self.as_ptr().add(offset) >> bit) & 1) != 0
     }
 
+    /// Replace an index of the vector, not checking size
+    ///
+    /// # Safety
+    /// It is up to the user to perform validation of the index being within the bounds.
     #[inline]
+    #[allow(clippy::unit_arg)]
     pub unsafe fn replace_unchecked(&mut self, index: u32, value: bool) -> bool {
         let (offset, bit) = calc_bit(index);
 
@@ -234,9 +246,11 @@ impl<'a> BitVec<'a> {
     }
 
     #[inline]
+
     pub fn set(&mut self, index: u32, value: bool) -> Result<(), ArenaError> {
         if check_bounds(index, self.capacity()) {
-            Ok(unsafe { self.set_unchecked(index, value) })
+            unsafe { self.set_unchecked(index, value) }
+            Ok(())
         } else {
             Err(ArenaError::OutOfBounds)
         }
@@ -245,7 +259,8 @@ impl<'a> BitVec<'a> {
     #[inline]
     pub fn toggle(&mut self, index: u32) -> Result<(), ArenaError> {
         if check_bounds(index, self.capacity()) {
-            Ok(unsafe { self.toggle_unchecked(index) })
+            unsafe { self.toggle_unchecked(index) }
+            Ok(())
         } else {
             Err(ArenaError::OutOfBounds)
         }
@@ -278,6 +293,9 @@ impl<'a> BitVec<'a> {
     pub fn len(&self) -> u32 {
         self.size
     }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
 
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u64 {
         self.buffer.ptr.as_ptr().cast()
@@ -427,11 +445,7 @@ impl<'a> Index<u32> for BitVec<'a> {
 
 #[inline(always)]
 fn check_bounds(index: u32, capacity: u32) -> bool {
-    if index >= capacity {
-        false
-    } else {
-        true
-    }
+    index < capacity
 }
 
 #[inline(always)]
@@ -497,13 +511,14 @@ unsafe fn bitmap_decode_sse2(start_offset: u32, bitmap: &[u64], out: &mut [u32])
     };
 
     #[inline(always)]
+    #[allow(clippy::cast_ptr_alignment)] // Fuck off clippy, we handle this ourselves
     unsafe fn lookup_index(mask: isize) -> __m128i {
         _mm_load_si128(LUT_INDICES.0.as_ptr().offset(mask) as _)
     }
 
     let mut out_pos = 0;
 
-    let bitmap_iter = bitmap.into_iter();
+    let bitmap_iter = bitmap.iter();
 
     debug_assert!(out.len() >= bitmap_iter.len() * 64);
 
@@ -514,7 +529,7 @@ unsafe fn bitmap_decode_sse2(start_offset: u32, bitmap: &[u64], out: &mut [u32])
             base = _mm_add_epi32(base, _mm_set1_epi32(64));
             continue;
         }
-
+        #[allow(clippy::cast_ptr_alignment)] // Fuck off clippy, we handle this ourselves
         for i in 0..4 {
             let move_mask = (*bits >> (i * 16)) as u16;
 
